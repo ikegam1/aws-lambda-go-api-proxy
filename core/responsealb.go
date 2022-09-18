@@ -14,8 +14,8 @@ import (
 	"github.com/aws/aws-lambda-go/events"
 )
 
-// ProxyResponseWriterV2 implements http.ResponseWriter and adds the method
-// necessary to return an events.APIGatewayProxyResponse object
+// ProxyResponseWriterALB implements http.ResponseWriter and adds the method
+// necessary to return an events.ALBTargetGroupResponse object
 type ProxyResponseWriterALB struct {
 	headers   http.Header
 	body      bytes.Buffer
@@ -80,7 +80,7 @@ func (r *ProxyResponseWriterALB) WriteHeader(status int) {
 }
 
 // GetProxyResponse converts the data passed to the response writer into
-// an events.APIGatewayProxyResponse object.
+// an events.ALBTargetGroupResponse object.
 // Returns a populated proxy response object. If the response is invalid, for example
 // has no headers or an invalid status code returns an error.
 func (r *ProxyResponseWriterALB) GetProxyResponse() (events.ALBTargetGroupResponse, error) {
@@ -103,20 +103,23 @@ func (r *ProxyResponseWriterALB) GetProxyResponse() (events.ALBTargetGroupRespon
 	}
 
 	headers := make(map[string]string)
-	cookies := make([]string, 0)
+	multiHeaders := make(map[string][]string)
 
+	// set both Headers and MultiValueHeaders
 	for headerKey, headerValue := range http.Header(r.headers) {
-		if strings.EqualFold("set-cookie", headerKey) {
-			cookies = append(cookies, headerValue...)
-			continue
-		}
 		headers[headerKey] = strings.Join(headerValue, ",")
+		if multiHeaders[headerKey] != nil {
+			multiHeaders[headerKey] = append(multiHeaders[headerKey], strings.Join(headerValue, ","))
+		} else {
+			multiHeaders[headerKey] = []string{strings.Join(headerValue, ",")}
+		}
 	}
 
 	return events.ALBTargetGroupResponse{
 		StatusCode:        r.status,
-		StatusDescription: fmt.Sprintf("%d HOGE", r.status),
+		StatusDescription: fmt.Sprintf("%d %s", r.status, http.StatusText(r.status)),
 		Headers:           headers,
+		MultiValueHeaders: multiHeaders,
 		Body:              output,
 		IsBase64Encoded:   isBase64,
 	}, nil

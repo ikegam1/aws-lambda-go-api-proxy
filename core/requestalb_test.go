@@ -3,6 +3,7 @@ package core_test
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"io/ioutil"
 	"math/rand"
 	"strings"
@@ -116,6 +117,9 @@ var _ = Describe("RequestAccessorALB tests", func() {
 			"hello": "1",
 			"world": "2,3",
 		}
+		mvhRequest.MultiValueHeaders = map[string][]string{
+			"hello world": []string{"4", "5", "6"},
+		}
 
 		It("Populates multiple value headers correctly", func() {
 			httpReq, err := accessor.EventToRequestWithContext(context.Background(), mvhRequest)
@@ -124,10 +128,14 @@ var _ = Describe("RequestAccessorALB tests", func() {
 			Expect("GET").To(Equal(httpReq.Method))
 
 			headers := httpReq.Header
-			Expect(2).To(Equal(len(headers)))
+			Expect(3).To(Equal(len(headers)))
 
 			for k, value := range headers {
-				Expect(strings.Join(value, ",")).To(Equal(mvhRequest.Headers[strings.ToLower(k)]))
+				if mvhRequest.Headers[strings.ToLower(k)] != "" {
+					Expect(strings.Join(value, ",")).To(Equal(mvhRequest.Headers[strings.ToLower(k)]))
+				} else {
+					Expect(strings.Join(value, ",")).To(Equal(strings.Join(mvhRequest.MultiValueHeaders[strings.ToLower(k)], ",")))
+				}
 			}
 		})
 
@@ -150,10 +158,9 @@ var _ = Describe("RequestAccessorALB tests", func() {
 			}
 		})
 
-		basePathRequest := getProxyRequestALB("/app1/orders", "GET")
+		basePathRequest := getProxyRequestALB("/orders", "GET")
 
 		It("Stips the base path correct", func() {
-			accessor.StripBasePath("app1")
 			httpReq, err := accessor.EventToRequestWithContext(context.Background(), basePathRequest)
 
 			Expect(err).To(BeNil())
@@ -161,7 +168,7 @@ var _ = Describe("RequestAccessorALB tests", func() {
 			Expect("/orders").To(Equal(httpReq.RequestURI))
 		})
 
-		contextRequest := getProxyRequestALB("orders", "GET")
+		contextRequest := getProxyRequestALB("/orders", "GET")
 		contextRequest.RequestContext = getRequestContextALB()
 
 		It("Populates context header correctly", func() {
@@ -173,46 +180,26 @@ var _ = Describe("RequestAccessorALB tests", func() {
 		})
 	})
 
-	Context("StripBasePath tests", func() {
-		accessor := core.RequestAccessorALB{}
-		It("Adds prefix slash", func() {
-			basePath := accessor.StripBasePath("app1")
-			Expect("/app1").To(Equal(basePath))
-		})
-
-		It("Removes trailing slash", func() {
-			basePath := accessor.StripBasePath("/app1/")
-			Expect("/app1").To(Equal(basePath))
-		})
-
-		It("Ignores blank strings", func() {
-			basePath := accessor.StripBasePath("  ")
-			Expect("").To(Equal(basePath))
-		})
-	})
-
 	Context("Retrieves ALB Target Group context", func() {
 		It("Returns a correctly unmarshalled object", func() {
-			contextRequest := getProxyRequestALB("orders", "GET")
+			contextRequest := getProxyRequestALB("/orders", "GET")
 			contextRequest.RequestContext = getRequestContextALB()
 
 			accessor := core.RequestAccessorALB{}
-			// calling old method to verify reverse compatibility
 			httpReq, err := accessor.ProxyEventToHTTPRequest(contextRequest)
 			Expect(err).To(BeNil())
+			ctx := httpReq.Header[core.ALBTgContextHeader][0]
+			var parsedCtx events.ALBTargetGroupRequestContext
+			json.Unmarshal([]byte(ctx), &parsedCtx)
+			Expect("foo").To(Equal(parsedCtx.ELB.TargetGroupArn))
 
 			headerContext, err := accessor.GetALBTargetGroupRequestContext(httpReq)
 			Expect(err).To(BeNil())
-			Expect(headerContext).ToNot(BeNil())
-			proxyContext, ok := core.GetALBTargetGroupContextFromContext(httpReq.Context())
-			// should fail because using header proxy method
-			Expect(ok).To(BeFalse())
+			Expect("foo").To(Equal(headerContext.ELB.TargetGroupArn))
 
 			httpReq, err = accessor.EventToRequestWithContext(context.Background(), contextRequest)
 			Expect(err).To(BeNil())
-			proxyContext, ok = core.GetALBTargetGroupContextFromContext(httpReq.Context())
-			Expect(ok).To(BeTrue())
-			Expect(proxyContext.ELB.TargetGroupArn).ToNot(BeNil())
+			Expect("/orders").To(Equal(httpReq.RequestURI))
 			runtimeContext, ok := core.GetRuntimeContextFromContextALB(httpReq.Context())
 			Expect(ok).To(BeTrue())
 			Expect(runtimeContext).To(BeNil())
@@ -220,42 +207,16 @@ var _ = Describe("RequestAccessorALB tests", func() {
 			lambdaContext := lambdacontext.NewContext(context.Background(), &lambdacontext.LambdaContext{AwsRequestID: "abc123"})
 			httpReq, err = accessor.EventToRequestWithContext(lambdaContext, contextRequest)
 			Expect(err).To(BeNil())
+			Expect("/orders").To(Equal(httpReq.RequestURI))
 
 			headerContext, err = accessor.GetALBTargetGroupRequestContext(httpReq)
 			// should fail as new context method doesn't populate headers
 			Expect(err).ToNot(BeNil())
-			proxyContext, ok = core.GetALBTargetGroupContextFromContext(httpReq.Context())
-			Expect(ok).To(BeTrue())
-			Expect(proxyContext.ELB.TargetGroupArn).ToNot(BeNil())
+			Expect("").To(Equal(headerContext.ELB.TargetGroupArn))
 			runtimeContext, ok = core.GetRuntimeContextFromContextALB(httpReq.Context())
 			Expect(ok).To(BeTrue())
 			Expect(runtimeContext).ToNot(BeNil())
 			Expect("abc123").To(Equal(runtimeContext.AwsRequestID))
-		})
-
-		It("Populates stage variables correctly", func() {
-			varsRequest := getProxyRequestALB("orders", "GET")
-
-			accessor := core.RequestAccessorALB{}
-			httpReq, err := accessor.ProxyEventToHTTPRequest(varsRequest)
-			Expect("/orders").To(Equal(httpReq.RequestURI))
-			Expect(err).To(BeNil())
-
-			httpReq, err = accessor.EventToRequestWithContext(context.Background(), varsRequest)
-			Expect("/orders").To(Equal(httpReq.RequestURI))
-			Expect(err).To(BeNil())
-		})
-
-		It("Populates the default hostname correctly", func() {
-
-			basicRequest := getProxyRequestALB("orders", "GET")
-			basicRequest.RequestContext = getRequestContextALB()
-			accessor := core.RequestAccessorALB{}
-			httpReq, err := accessor.ProxyEventToHTTPRequest(basicRequest)
-			Expect("/orders").To(Equal(httpReq.RequestURI))
-			Expect(err).To(BeNil())
-
-			Expect(httpReq.RequestURI).To(ContainSubstring(basicRequest.Path))
 		})
 	})
 })

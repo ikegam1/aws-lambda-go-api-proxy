@@ -19,26 +19,19 @@ import (
 )
 
 const (
-	// APIGwContextHeader is the custom header key used to store the
-	// API Gateway context. To access the Context properties use the
-	// GetAPIGatewayContext method of the RequestAccessor object.
-	ALBTgContextHeader = "X-GoLambdaProxy-AlbTargetGroup-Context"
-
-	// APIGwStageVarsHeader is the custom header key used to store the
-	// API Gateway stage variables. To access the stage variable values
-	// use the GetAPIGatewayStageVars method of the RequestAccessor object.
-	ALBTgStageVarsHeader = "X-GoLambdaProxy-AlbTargetGroup-StageVars"
+	// ALBTgContextHeader is the custom header key used to store the
+	// ALB Target Group Request context. To access the Context properties use the
+	// RequestAccessorALB method of the RequestAccessorALB object.
+	ALBTgContextHeader = "X-Golambdaproxy-Albtargetgroup-Context"
 )
 
 // RequestAccessorALB objects give access to custom API Gateway properties
 // in the request.
-type RequestAccessorALB struct {
-	stripBasePath string
-}
+type RequestAccessorALB struct{}
 
-// GetAPIGatewayContextV2 extracts the API Gateway context object from a
+// GetALBTargetGroupRequestContext extracts the ALB Target Group Responce context object from a
 // request's custom header.
-// Returns a populated events.APIGatewayProxyRequestContext object from
+// Returns a populated events.ALBTargetGroupRequestContext object from
 // the request.
 func (r *RequestAccessorALB) GetALBTargetGroupRequestContext(req *http.Request) (events.ALBTargetGroupRequestContext, error) {
 	if req.Header.Get(ALBTgContextHeader) == "" {
@@ -54,33 +47,9 @@ func (r *RequestAccessorALB) GetALBTargetGroupRequestContext(req *http.Request) 
 	return context, nil
 }
 
-// StripBasePath instructs the RequestAccessor object that the given base
-// path should be removed from the request path before sending it to the
-// framework for routing. This is used when API Gateway is configured with
-// base path mappings in custom domain names.
-func (r *RequestAccessorALB) StripBasePath(basePath string) string {
-	if strings.Trim(basePath, " ") == "" {
-		r.stripBasePath = ""
-		return ""
-	}
-
-	newBasePath := basePath
-	if !strings.HasPrefix(newBasePath, "/") {
-		newBasePath = "/" + newBasePath
-	}
-
-	if strings.HasSuffix(newBasePath, "/") {
-		newBasePath = newBasePath[:len(newBasePath)-1]
-	}
-
-	r.stripBasePath = newBasePath
-
-	return newBasePath
-}
-
-// ProxyEventToHTTPRequest converts an API Gateway proxy event into a http.Request object.
-// Returns the populated http request with additional two custom headers for the stage variables and API Gateway context.
-// To access these properties use the GetAPIGatewayStageVars and GetAPIGatewayContext method of the RequestAccessor object.
+// ProxyEventToHTTPRequest converts an ALB Target Group proxy event into a http.Request object.
+// Returns the populated http request with additional two custom headers for ALB Tg Req context.
+// To access these properties use the GetALBTargetGroupRequestContext method of the RequestAccessor object.
 func (r *RequestAccessorALB) ProxyEventToHTTPRequest(req events.ALBTargetGroupRequest) (*http.Request, error) {
 	httpRequest, err := r.EventToRequest(req)
 	if err != nil {
@@ -90,9 +59,9 @@ func (r *RequestAccessorALB) ProxyEventToHTTPRequest(req events.ALBTargetGroupRe
 	return addToHeaderALB(httpRequest, req)
 }
 
-// EventToRequestWithContext converts an API Gateway proxy event and context into an http.Request object.
-// Returns the populated http request with lambda context, stage variables and APIGatewayProxyRequestContext as part of its context.
-// Access those using GetAPIGatewayContextFromContext, GetStageVarsFromContext and GetRuntimeContextFromContext functions in this package.
+// EventToRequestWithContext converts an ALB Target Group proxy event and context into an http.Request object.
+// Returns the populated http request with lambda context, ALBTargetGroupRequestContext as part of its context.
+// Access those using GetRuntimeContextFromContextALB and GetRuntimeContextFromContext functions in this package.
 func (r *RequestAccessorALB) EventToRequestWithContext(ctx context.Context, req events.ALBTargetGroupRequest) (*http.Request, error) {
 	httpRequest, err := r.EventToRequest(req)
 	if err != nil {
@@ -102,7 +71,7 @@ func (r *RequestAccessorALB) EventToRequestWithContext(ctx context.Context, req 
 	return addToContextALB(ctx, httpRequest, req), nil
 }
 
-// EventToRequest converts an API Gateway proxy event into an http.Request object.
+// EventToRequest converts an ALB Target group proxy event into an http.Request object.
 // Returns the populated request maintaining headers
 func (r *RequestAccessorALB) EventToRequest(req events.ALBTargetGroupRequest) (*http.Request, error) {
 	decodedBody := []byte(req.Body)
@@ -116,11 +85,6 @@ func (r *RequestAccessorALB) EventToRequest(req events.ALBTargetGroupRequest) (*
 
 	path := req.Path
 
-	if r.stripBasePath != "" && len(r.stripBasePath) > 1 {
-		if strings.HasPrefix(path, r.stripBasePath) {
-			path = strings.Replace(path, r.stripBasePath, "", 1)
-		}
-	}
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}
@@ -151,19 +115,24 @@ func (r *RequestAccessorALB) EventToRequest(req events.ALBTargetGroupRequest) (*
 		}
 	}
 
-	httpRequest.RequestURI = httpRequest.URL.RequestURI()
+	for headerKey, headerValue := range req.MultiValueHeaders {
+		for _, arrVal := range headerValue {
+			for _, val := range strings.Split(arrVal, ",") {
+				httpRequest.Header.Add(headerKey, strings.Trim(val, " "))
+			}
+		}
+	}
 
-	//for k, v := range req.Headers {
-	//	httpRequest.Header.Add(k, v)
-	//}
+	httpRequest.RequestURI = httpRequest.URL.RequestURI()
 
 	return httpRequest, nil
 }
 
 func addToHeaderALB(req *http.Request, albTgRequest events.ALBTargetGroupRequest) (*http.Request, error) {
+	//req.Header.Add(ALBTgContextHeader, albTgRequest.RequestContext.ELB.TargetGroupArn)
 	albTgContext, err := json.Marshal(albTgRequest.RequestContext)
 	if err != nil {
-		log.Println("Could not Marshal API GW context for custom header")
+		log.Println("Could not Marshal ALB Tg context for custom header")
 		return req, err
 	}
 	req.Header.Add(ALBTgContextHeader, string(albTgContext))
@@ -177,13 +146,7 @@ func addToContextALB(ctx context.Context, req *http.Request, albTgRequest events
 	return req.WithContext(ctx)
 }
 
-// GetAPIGatewayV2ContextFromContext retrieve APIGatewayProxyRequestContext from context.Context
-func GetALBTargetGroupContextFromContext(ctx context.Context) (events.ALBTargetGroupRequestContext, bool) {
-	v, ok := ctx.Value(ctxKey{}).(requestContextALB)
-	return v.gatewayProxyContext, ok
-}
-
-// GetRuntimeContextFromContextV2 retrieve Lambda Runtime Context from context.Context
+// GetRuntimeContextFromContextALB retrieve Lambda Runtime Context from context.Context
 func GetRuntimeContextFromContextALB(ctx context.Context) (*lambdacontext.LambdaContext, bool) {
 	v, ok := ctx.Value(ctxKey{}).(requestContextALB)
 	return v.lambdaContext, ok
